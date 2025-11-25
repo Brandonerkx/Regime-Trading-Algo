@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+
 def calculate_vif(df):
     df_numeric = df.select_dtypes(include=[np.number])
     vif_data = pd.DataFrame()
