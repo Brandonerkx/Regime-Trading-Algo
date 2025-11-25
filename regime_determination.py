@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+
 def build_regime_predictions(
     features_df,
     regime_spy_df,
