@@ -432,3 +432,24 @@ def build_regime_predictions(
 
     regime_pred_next = pd.Series(preds_vals, index=preds_dates, name="regime_pred_next")
     return regime_pred_next
+
+def _hurst_exponent(x):
+    try:
+        H, _, _ = compute_Hc(np.asarray(x), kind="price", simplified=True)
+        return H
+    except Exception:
+        return np.nan
+
+def rolling_hurst(series, window):
+    return series.rolling(window=window, min_periods=window).apply(
+        lambda a: _hurst_exponent(a), raw=False
+    )
+
+def classify_hurst_binary(h):
+    if pd.isna(h):
+        return np.nan
+    if h > H_TRENDING_TH:
+        return 0 
+    else:
+        return 1 
+
