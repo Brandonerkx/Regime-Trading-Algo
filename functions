@@ -1,0 +1,434 @@
+def derivatives(df,col):
+    df_copy = df.copy()
+    df_copy["velocity"] = df_copy[col].diff().fillna(0)
+    df_copy["acceleration"] = df_copy["velocity"].diff().fillna(0)
+    return df_copy
+
+
+def moving_parkinson_estimator(df, window_size=30):
+    def parkinson_estimator(df):
+        N = len(df)
+        sum_squared = np.sum(np.log(df['high'] / df['low']) ** 2)
+        volatility = math.sqrt((1 / (4 * N * math.log(2))) * sum_squared)
+        return volatility
+    df_copy = df.copy()
+    rolling_volatility = pd.Series(dtype='float64')
+    for i in range(window_size, len(df)):
+        window = df_copy.loc[df_copy.index[i-window_size]: df_copy.index[i]]
+        volatility = parkinson_estimator(window)
+        rolling_volatility.at[df_copy.index[i]] = volatility
+    df_copy['rolling_volatility_parkinson'] = rolling_volatility
+    return df_copy
+
+
+def moving_yang_zhang_estimator(df, window_size=30):
+    def yang_zhang_estimator(df):
+        N = len(window)
+        term1 = np.log(window['high'] / window['close']) * np.log(window['high'] / window['open'])
+        term2 = np.log(window['low'] / window['close']) * np.log(window['low'] / window['open'])
+        sum_squared = np.sum(term1 + term2)
+        volatility = np.sqrt(sum_squared / N)
+        return volatility   
+    df_copy = df.copy()
+    rolling_volatility = pd.Series(dtype='float64')
+    for i in range(window_size, len(df)):
+        window = df_copy.loc[df_copy.index[i-window_size]: df_copy.index[i]]
+        volatility = yang_zhang_estimator(window)
+        rolling_volatility.at[df_copy.index[i]] = volatility
+    df_copy['rolling_volatility_yang_zhang'] = rolling_volatility
+    return df_copy
+
+
+def DC_market_regime(df, threshold):
+    def dc_event(Pt, Pext, threshold):
+        var = (Pt - Pext) / Pext
+        if threshold <= var:
+            dc = 1
+        elif var <= -threshold:
+            dc = -1
+        else:
+            dc = 0
+        return dc
+    def calculate_dc(df, threshold):
+        dc_events_up = []
+        dc_events_down = []
+        dc_events = []
+        os_events = []
+        last_dc_price = df["close"][0]
+        last_dc_direction = 0 
+        min_price = last_dc_price
+        max_price = last_dc_price
+        idx_min = 0
+        idx_max = 0
+        for i, current_price in enumerate(df["close"]):
+            try:
+                max_price = df["high"].iloc[dc_events[-1][-1]:i].max()
+                min_price = df["low"].iloc[dc_events[-1][-1]:i].min()
+                idx_min = df["high"].iloc[dc_events[-1][-1]:i].idxmin()
+                idx_max = df["low"].iloc[dc_events[-1][-1]:i].idxmax()
+            except Exception as e:
+                pass
+            dc_price_min = dc_event(current_price, min_price, threshold)
+            dc_price_max = dc_event(current_price, max_price, threshold)
+            if (last_dc_direction!=1) & (dc_price_min==1):
+                dc_events_up.append([idx_min, i])
+                dc_events.append([idx_min, i])
+                last_dc_direction = 1
+            elif (last_dc_direction!=-1) & (dc_price_max==-1):
+                dc_events_down.append([idx_max, i])
+                dc_events.append([idx_max, i])
+                last_dc_direction = -1
+        return dc_events_up, dc_events_down, dc_events
+    def calculate_trend(dc_events_down, dc_events_up, df):
+        trend_events_up = []
+        trend_events_down = []
+        if dc_events_down[0][0]==0:
+            for i in range(len(dc_events_down)):
+                if i==len(dc_events_down)-1:
+                    break
+                trend_events_up.append([dc_events_up[i][1], dc_events_down[i+1][1]])
+                trend_events_down.append([dc_events_down[i][1], dc_events_up[i][1]])
+        elif dc_events_up[0][0]==0:
+            for i in range(len(dc_events_up)):
+                if i==len(dc_events_up)-1:
+                    break
+                trend_events_up.append([dc_events_down[i][1], dc_events_up[i+1][1]])
+                trend_events_down.append([dc_events_up[i][1], dc_events_down[i][1]])
+        last_up = trend_events_up[-1][1]
+        last_down = trend_events_down[-1][1]
+        if last_down < last_up:
+            trend_events_up[-1][1] = len(df)-1
+        else:
+            trend_events_down[-1][1] = len(df)-1
+        return trend_events_down, trend_events_up
+    def get_dc_price(dc_events, df):
+        dc_events_prices = []
+        for event in dc_events:
+            prices = [df["close"].iloc[event[0]], df["close"].iloc[event[1]]]
+            dc_events_prices.append(prices)
+        return dc_events_prices
+    df_copy = df.copy()
+    dc_events_up, dc_events_down, dc_events = calculate_dc(df_copy, threshold=threshold)
+    trend_events_down, trend_events_up = calculate_trend(dc_events_down, dc_events_up, df_copy)
+    df_copy["DC_market_regime"] = np.nan
+    for event_up in trend_events_up:
+        df_copy.loc[df_copy.index[event_up[1]], "DC_market_regime"] = 1
+    for event_down in trend_events_down:
+        df_copy.loc[df_copy.index[event_down[1]], "DC_market_regime"] = 0
+    df_copy["DC_market_regime"] = df_copy["DC_market_regime"].ffill()   
+    return df_copy
+
+
+def spread(df):
+    df_copy = df.copy()
+    df_copy["spread"] = df_copy["high"] - df_copy["low"]
+    return df_copy
+
+
+def auto_corr(df, col, n=50, lag=10):
+    df_copy = df.copy()
+    df_copy[f'autocorr_{lag}'] = df_copy[col].rolling(window=n, min_periods=n, center=False).apply(lambda x: x.autocorr(lag=lag), raw=False)
+    return df_copy
+
+
+def bollinger_band_deviation(df, col='close', n=20):
+    df_copy = df.copy()
+    mid = df_copy[col].rolling(n, min_periods=n).mean()
+    std = df_copy[col].rolling(n, min_periods=n).std()
+    df_copy[f'bb_upper_{n}'] = mid + 2*std
+    df_copy[f'bb_lower_{n}'] = mid - 2*std
+    df_copy[f'bb_z_{n}'] = (df_copy[col] - mid) / std
+    return df_copy
+
+
+def rsi_14(df, col='close', n=14):
+    df_copy = df.copy()
+    delta = df_copy[col].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.ewm(alpha=1/n, adjust=False, min_periods=n).mean()
+    avg_loss = loss.ewm(alpha=1/n, adjust=False, min_periods=n).mean()
+
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi = 100 - (100 / (1 + rs))
+    df_copy[f'rsi_{n}'] = rsi.fillna(method='backfill')
+
+    df_copy['rsi_lt_30'] = (df_copy[f'rsi_{n}'] < 30).astype(int)
+    df_copy['rsi_gt_70'] = (df_copy[f'rsi_{n}'] > 70).astype(int)
+    return df_copy
+
+
+def vwap(df):
+    df_copy = df.copy()
+    tp = (df_copy['high'] + df_copy['low'] + df_copy['close']) / 3.0
+    cum_pv = (tp * df_copy['volume']).cumsum()
+    cum_v = (df_copy['volume']).cumsum().replace(0, np.nan)
+    df_copy['vwap'] = (cum_pv / cum_v)
+    return df_copy
+
+
+def obv(df):
+    df_copy = df.copy()
+    close = df_copy['close']
+    sign = np.sign(close.diff()).fillna(0)
+    df_copy['obv'] = (sign * df_copy['volume']).cumsum()
+    return df_copy
+
+
+def volume_price_trend(df):
+    df_copy = df.copy()
+    close = df_copy['close']
+    ret = close.pct_change().fillna(0)
+    df_copy['vpt'] = (df_copy['volume'] * ret).cumsum()
+    return df_copy
+
+
+def stochastic_oscillators(df, n=14, d_n=3):
+    df_copy = df.copy()
+    ll = df_copy['low'].rolling(n, min_periods=n).min()
+    hh = df_copy['high'].rolling(n, min_periods=n).max()
+    denom = (hh - ll).replace(0, np.nan)
+    k = 100 * (df_copy['close'] - ll) / denom
+    df_copy[f'stoch_k_{n}'] = k
+    df_copy[f'stoch_d_{n}_{d_n}'] = k.rolling(d_n, min_periods=d_n).mean()
+    return df_copy
+
+
+def chande_momentum_oscillator(df, col='close', window=14):
+    df_copy = df.copy()
+    delta = df_copy[col].diff()
+    up = delta.clip(lower=0)
+    down = (-delta).clip(lower=0)
+    sum_up = up.rolling(window=window, min_periods=window).sum()
+    sum_down = down.rolling(window=window, min_periods=window).sum()
+    cmo = 100 * (sum_up - sum_down) / (sum_up + sum_down)
+    df_copy[f'cmo_{window}'] = cmo
+    return df_copy
+
+
+def average_true_range(df, window=14):
+    df_copy = df.copy()
+    prev_close = df_copy['close'].shift(1)
+    tr1 = df_copy['high'] - df_copy['low']
+    tr2 = (df_copy['high'] - prev_close).abs()
+    tr3 = (df_copy['low'] - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = true_range.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+    df_copy['true_range'] = true_range
+    df_copy[f'atr_{window}'] = atr
+    return df_copy
+
+
+def average_directional_index(df, window=14):
+    df_copy = df.copy()
+    high = df_copy['high']
+    low = df_copy['low']
+    close = df_copy['close']
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    plus_dm = pd.Series(plus_dm, index=df_copy.index)
+    minus_dm = pd.Series(minus_dm, index=df_copy.index)
+    prev_close = close.shift(1)
+    tr1 = (high - low)
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+
+    # Smoothed DM (Wilder)
+    plus_dm_sm = plus_dm.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+    minus_dm_sm = minus_dm.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+
+    # Directional Indicators
+    plus_di = 100 * (plus_dm_sm / atr)
+    minus_di = 100 * (minus_dm_sm / atr)
+
+    # DX and ADX
+    dx = 100 * (plus_di.subtract(minus_di).abs() / (plus_di + minus_di))
+    adx = dx.ewm(alpha=1/window, adjust=False, min_periods=window).mean()
+
+    df_copy[f'plus_di_{window}'] = plus_di
+    df_copy[f'minus_di_{window}'] = minus_di
+    df_copy[f'dx_difference_{window}'] = plus_di - minus_di
+    df_copy[f'dx_{window}'] = dx
+    df_copy[f'adx_{window}'] = adx
+    return df_copy
+
+    
+def calculate_vif(df):
+    df_numeric = df.select_dtypes(include=[np.number])
+    vif_data = pd.DataFrame()
+    vif_data["Feature"] = df_numeric.columns
+    vif_data["VIF"] = [round(variance_inflation_factor(df_numeric.values, i), 2)
+                       for i in range(df_numeric.shape[1])]
+    return vif_data
+
+
+def close_percentage_in_range(series, low, high, start_percentage, end_percentage):
+    start_threshold = low + start_percentage * (high - low)
+    end_threshold = low + end_percentage * (high - low)
+    count_in_range = series[(series >= start_threshold) & (series <= end_threshold)].count()
+    total_count = series.count()
+    return (count_in_range / total_count) * 100 if total_count > 0 else 0
+
+    
+def apply_close_percentage_in_range(df, start_percentage, end_percentage):
+    low = df['low'].min()
+    high = df['high'].max()
+    close_prices = df['close']
+    return close_percentage_in_range(close_prices, low, high, start_percentage, end_percentage)
+
+
+def linear_regression_slope(series):
+    X = np.arange(len(series)).reshape(-1, 1)  # Create an array of indices for X
+    y = series.values.reshape(-1, 1)  # Use the values of the series as y
+    model = LinearRegression().fit(X, y)  # Fit the linear regression model
+    slope = model.coef_[0][0]  # Extract the slope from the model
+    return slope
+
+    
+def apply_linear_regression_slope(df):
+    close_prices = df['close']
+    try:
+        coef = linear_regression_slope(close_prices)
+    except:
+        coef = 0
+    return coef
+
+
+def apply_linear_regression_slope_last_25(df):
+    close_prices = df['close']
+    num_points = max(2, int(len(close_prices) * 0.25))  # Select the last 25% of the data
+    recent_prices = close_prices[-num_points:]  
+    try:
+        coef = linear_regression_slope(recent_prices)
+    except:
+        coef = np.nan 
+    return coef
+
+
+def linear_regression_slope_market_trend(series):
+    X = np.arange(len(series)).reshape(-1, 1)  
+    y = series.values.reshape(-1, 1)  
+    model = LinearRegression().fit(X, y) 
+    slope = model.coef_[0][0]  
+    return slope
+
+    
+def remove_intercolinarity(X_train, threshold):
+    X_train_bis = X_train.copy()
+    vif_results = calculate_vif(X_train_bis)
+    vif_results = vif_results.set_index("Feature")
+    name = vif_results.sort_values("VIF", ascending=False).iloc[0].name
+    value = vif_results.sort_values("VIF", ascending=False).iloc[0].values[0]
+    while value > threshold: 
+        del X_train_bis[name]
+        vif_results = calculate_vif(X_train_bis)
+        vif_results = vif_results.set_index("Feature")
+        name = vif_results.sort_values("VIF", ascending=False).iloc[0].name
+        value = vif_results.sort_values("VIF", ascending=False).iloc[0].values[0]
+    return vif_results
+
+
+def correlation_graphs(df):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(30, 10)) 
+    sns.heatmap(df.corr(), fmt=".2f", cmap="coolwarm", annot=True, vmin=-1, vmax=1, ax=ax1)
+    ax1.set_title("Pearson Correlation")
+    sns.heatmap(df.corr(method="spearman"), fmt=".2f", cmap="coolwarm", annot=True, vmin=-1, vmax=1, ax=ax2)
+    ax2.set_title("Spearman Correlation")
+    plt.tight_layout()
+    plt.show()
+
+
+def classify_vol_percentile(p):
+    if pd.isna(p):
+        return np.nan
+    if p >= 0.65:
+        return 'HighVol'
+    if p <= 0.35:
+        return 'LowVol'
+    return 'MidVol'
+
+
+def print_feature_cols(name, cols):
+    print(f"\n{name} columns:")
+    print("[" + ", ".join(f"'{c}'" for c in cols) + "]")
+
+def build_regime_predictions(
+    features_df,
+    regime_spy_df,
+    sc,
+    X_trend_train,
+    trend_selected_features,
+    trend_model,
+    transition_matrix,
+    n_trend_train
+):
+
+    regime_series = regime_spy_df['regime_id'].copy()
+    regime_series.index = regime_series.index.normalize()
+    feat_index = features_df.index
+    regime_aligned = regime_series.reindex(feat_index)
+
+    preds_dates = []
+    preds_vals = []
+
+    valid_mask = regime_aligned.notna()
+    if not valid_mask.any():
+        raise ValueError("No overlapping dates between features_df and regime_spy_df.")
+
+    first_valid_idx = valid_mask[valid_mask].index[0]
+    first_valid_pos = feat_index.get_loc(first_valid_idx)
+
+    start_pos = max(n_trend_train, first_valid_pos)
+
+    for i in range(start_pos, len(features_df) - 1):
+
+        date_t = feat_index[i]
+        date_tp1 = feat_index[i + 1]
+
+        current_regime = regime_aligned.iat[i]
+        if pd.isna(current_regime):
+            continue
+        current_regime = int(current_regime)
+
+        try:
+            X_t_raw = features_df.loc[[date_t], X_trend_train.columns]
+        except KeyError:
+            # If columns mismatch, skip
+            continue
+
+        # 2) scale using same scaler
+        X_t_scaled = sc.transform(X_t_raw)
+        X_t_scaled_df = pd.DataFrame(
+            X_t_scaled,
+            index=[date_t],
+            columns=X_trend_train.columns
+        )
+
+        missing = [c for c in trend_selected_features if c not in X_t_scaled_df.columns]
+        if missing:
+            continue
+        X_t_final = X_t_scaled_df[trend_selected_features]
+        P_ml = trend_model.predict_proba(X_t_final)[0]
+        P_markov = transition_matrix[current_regime]
+
+        # Penalize Markov to avoid overpowering predictions from our model
+        alpha = 0.8
+        P_combined = (P_ml ** alpha) * (P_markov ** (1 - alpha))
+        P_combined /= P_combined.sum()
+
+        if P_combined.sum() == 0:
+            P_combined = P_ml
+        P_combined = P_combined / P_combined.sum()
+
+        regime_next = int(np.argmax(P_combined))
+        preds_dates.append(date_tp1)
+        preds_vals.append(regime_next)
+
+    regime_pred_next = pd.Series(preds_vals, index=preds_dates, name="regime_pred_next")
+    return regime_pred_next
