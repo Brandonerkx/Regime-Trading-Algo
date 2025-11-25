@@ -1,1 +1,11 @@
-
+numpy
+pandas
+matplotlib
+polygon-api-client
+scikit-learn
+scipy
+statsmodels
+requests
+torch
+ta
+hurst
