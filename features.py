@@ -1,3 +1,6 @@
+import numpy as np
+import pandas as pd
+
 def derivatives(df,col):
     df_copy = df.copy()
     df_copy["velocity"] = df_copy[col].diff().fillna(0)
